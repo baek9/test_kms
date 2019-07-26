@@ -1,399 +1,355 @@
 #include <iostream>
-#include <fcntl.h>
-#include <vector>
-#include <map>
-#include <string>
-#include <xf86drm.h>
-#include <xf86drmMode.h>
+#include <cstring>
+#include <inttypes.h>
 #include <gbm.h>
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
+//#include <GLES3/gl3.h>
+//#include <GLES3/gl3ext.h>
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+//#include <GLFW/glfw3.h>
+
+#include "esUtil.h"
+#include "drm.h"
+#include "gbm.h"
+#include "egl.h"
+#include "glCube.h"
 
 using namespace std;
 
-// Singleton class
-class DRM
+static void page_flip_handler(int fd, unsigned int frame,
+                              unsigned int sec, unsigned int usec, void *data)
 {
-public:
-    typedef struct drmPipe
-    {
-        drmModeConnector *connector_;
-        vector<drmModeModeInfo *> modes_;
-        drmModeEncoder *encoder_;
-        drmModeCrtc *crtc_;
-    };
+  int *waiting_for_flip = (int *)data;
+  *waiting_for_flip = 0;
+}
 
-    static DRM *instance()
-    {
-        static DRM instance_;
-        return &instance_;
-    }
-
-    int print()
-    {
-        drmModeConnector *connector = NULL;
-        drmModeEncoder *encoder = NULL;
-        drmModeCrtc *crtc = NULL;
-
-        cout << "[connectors]" << endl;
-        for (int i = 0; i < resources_->count_connectors; i++)
-        {
-            connector = drmModeGetConnector(fd_, resources_->connectors[i]);
-            cout << i << " | id : " << connector->connector_id
-                 << " | type : " << connector->connector_type << endl;
-            drmModeFreeConnector(connector);
-        }
-
-        cout << "[encoders]" << endl;
-        for (int i = 0; i < resources_->count_encoders; i++)
-        {
-            encoder = drmModeGetEncoder(fd_, resources_->encoders[i]);
-            cout << i << " | id : " << encoder->encoder_id
-                 << " | type : " << encoder->encoder_type << endl;
-            drmModeFreeEncoder(encoder);
-        }
-
-        cout << "[crtcs]" << endl;
-        for (int i = 0; i < resources_->count_crtcs; i++)
-        {
-            crtc = drmModeGetCrtc(fd_, resources_->crtcs[i]);
-            cout << i << " | id : " << crtc->crtc_id << endl;
-            drmModeFreeCrtc(crtc);
-        }
-    }
-
-    int print_pipes() {}
-
-    int device_open()
-    {
-        fd_ = open("/dev/dri/card0", O_RDWR | O_NONBLOCK);
-        if (fd_ == -1)
-        {
-            perror("drm open() failed");
-            exit(1);
-        }
-
-        // Resources
-        resources_ = drmModeGetResources(fd_);
-        if (!resources_)
-        {
-            perror("drmModeGetResources() failed");
-            exit(1);
-        }
-    }
-
-    int initialize()
-    {
-        drmPipe *pipe = NULL;
-        drmModeConnector *connector = NULL;
-        drmModeModeInfo *mode = NULL;
-        drmModeEncoder *encoder = NULL;
-        drmModeCrtc *crtc = NULL;
-
-        // Connectors such as VGA, HDMI, DisplayPort, etc
-        for (int i = 0; i < resources_->count_connectors; i++)
-        {
-            connector = drmModeGetConnector(fd_, resources_->connectors[i]);
-            if (connector->connection == DRM_MODE_CONNECTED)
-            {
-                pipe = new drmPipe;
-                pipe->connector_ = connector;
-                pipes_.push_back(pipe);
-            }
-            else
-            {
-                drmModeFreeConnector(connector);
-            }
-        }
-
-        // Modes from connector
-        for (vector<drmPipe *>::iterator it = pipes_.begin(); it != pipes_.end();
-             ++it)
-        {
-            pipe = *it;
-            connector = pipe->connector_;
-            for (int j = 0; j < connector->count_modes; j++)
-            {
-                mode = &(connector->modes[j]);
-                pipe->modes_.push_back(mode);
-            }
-
-            // Encoder for the connector from resource
-            for (int j = 0; j < resources_->count_encoders; j++)
-            {
-                encoder = drmModeGetEncoder(fd_, resources_->encoders[j]);
-                if (connector->encoder_id == encoder->encoder_id)
-                {
-                    pipe->encoder_ = encoder;
-
-                    // Crtc for the encoder
-                    for (int k = 0; k < resources_->count_crtcs; k++)
-                    {
-                        crtc = drmModeGetCrtc(fd_, resources_->crtcs[k]);
-                        if (encoder->crtc_id == crtc->crtc_id)
-                        {
-                            pipe->crtc_ = crtc;
-                            break;
-                        }
-                        drmModeFreeCrtc(crtc);
-                    }
-                    continue;
-                }
-                drmModeFreeEncoder(encoder);
-                break;
-            }
-        }
-    }
-
-    drmPipe *available_pipe()
-    {
-        drmPipe *pipe;
-        drmModeConnector *connector = NULL;
-        drmModeModeInfo *mode = NULL;
-        drmModeEncoder *encoder = NULL;
-        drmModeCrtc *crtc = NULL;
-
-        for (vector<drmPipe *>::iterator it = pipes_.begin(); it != pipes_.end();
-             ++it)
-        {
-            pipe = *it;
-            connector = pipe->connector_;
-            encoder = pipe->encoder_;
-            crtc = pipe->crtc_;
-            if (pipe->crtc_)
-            {
-                cout << "[Available drm pipe]" << endl;
-                cout << "connector : "
-                     << " | id : " << connector->connector_id
-                     << " | type : " << connector->connector_type << endl;
-                cout << "encoder   : "
-                     << " | id : " << encoder->encoder_id
-                     << " | type : " << encoder->encoder_type << endl;
-                cout << "crtc      : "
-                     << " | id : " << crtc->crtc_id << endl;
-                return pipe;
-            }
-            else
-            {
-                cout << "what" << endl;
-            }
-        }
-    }
-
-private:
-    DRM(){};
-    DRM(const DRM &other){};
-    ~DRM(){};
-
-    // Not declare static instance here for security concern.
-    // ref : https://wendys.tistory.com/12
-    // static DRM instance_;
-
-    int fd_;
-    drmModeRes *resources_;
-    vector<drmPipe *> pipes_;
-    vector<drmModeConnector *> connectors_;
-    vector<drmModeEncoder *> encoders_;
-    vector<drmModeCrtc *> crtcs_;
-
-    friend class GBM;
+struct drm_fb
+{
+  struct gbm_bo *bo;
+  uint32_t fb_id;
 };
 
-// Singleton class
-class GBM
+static void drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 {
-private:
-    GBM(){};
-    GBM(const GBM &other){};
-    ~GBM(){};
+  int drm_fd = gbm_device_get_fd(gbm_bo_get_device(bo));
+  struct drm_fb *fb = (drm_fb *)data;
 
-    DRM *drm_;
-    struct gbm_device *device_;
-    struct gbm_surface *surface_;
-    uint32_t format_;
-    uint16_t width_, height_;
+  if (fb->fb_id)
+    drmModeRmFB(drm_fd, fb->fb_id);
 
-    friend class EGL;
+  free(fb);
+}
 
-public:
-    static GBM *instance()
+DRM *drm = DRM::instance();
+GBM *gbm = GBM::instance();
+EGL *egl = EGL::instance();
+glCube *gl = glCube::instance();
+
+int init()
+{
+  DRM::drmPipe *pipe;
+
+  drm->device_open();
+  drm->initialize();
+  drm->print();
+
+  gbm->init_gbm(drm);
+  egl->init_egl(gbm);
+  gl->initGl(egl, gbm);
+
+  cout << "ALL INITIALIZATION ENDED!!!" << endl;
+
+  // =================
+
+  struct gbm_bo *bo = NULL;
+
+/*
+  drmEventContext evctx = {
+    version : 2,
+    page_flip_handler : page_flip_handler,
+  };
+*/
+
+  drmEventContext evctx;
+  memset(&evctx, 0, sizeof(drmEventContext));
+  evctx.version = 2;
+  evctx.page_flip_handler = page_flip_handler;
+
+  gl->initCube();
+
+  // drm legacy run
+
+  cout << "1" << endl;
+
+  cout << "egl->display is exist" << eglQueryString(egl->display(), EGL_VERSION) << endl;
+
+  if (egl->surface() != EGL_NO_SURFACE)
+  {
+    cout << "egl->surface is exist" << endl;
+  }
+
+  int a = eglSwapBuffers(egl->display(), egl->surface());
+
+  egl->error();
+
+  bo = gbm_surface_lock_front_buffer(gbm->surface());
+
+  if (!bo)
+  {
+    cout << "what?" << endl;
+  }
+
+  cout << "2" << endl;
+
+  // =======================
+  // get information from bo
+
+  uint32_t width, height, format;
+
+  uint32_t strides[4] = {0},
+           handles[4] = {0},
+           offsets[4] = {0};
+
+  uint32_t flags = 0;
+
+  int ret = -1;
+  struct drm_fb *fb;
+
+  //fb = drm_fb_get_from_bo
+  int drm_fd = gbm_device_get_fd(gbm_bo_get_device(bo));
+  fb = (drm_fb *)gbm_bo_get_user_data(bo);
+  if (fb)
+  {
+    //return fb;
+    goto fb_exist;
+  }
+
+  //  uint32_t width, height, format;
+
+  fb = (drm_fb *)calloc(1, sizeof *fb);
+  fb->bo = bo;
+
+  width = gbm_bo_get_width(bo);
+  height = gbm_bo_get_height(bo);
+  format = gbm_bo_get_format(bo);
+
+  if (gbm_bo_get_modifier &&
+      gbm_bo_get_plane_count &&
+      gbm_bo_get_stride_for_plane &&
+      gbm_bo_get_offset)
+  {
+    uint64_t modifiers[4] = {0};
+    modifiers[0] = gbm_bo_get_modifier(bo);
+
+    const int num_planes = gbm_bo_get_plane_count(bo);
+    for (int i = 0; i < num_planes; i++)
     {
-        static GBM instance_;
-        return &instance_;
+      strides[i] = gbm_bo_get_stride_for_plane(bo, i);
+      handles[i] = gbm_bo_get_handle(bo).u32;
+      offsets[i] = gbm_bo_get_offset(bo, i);
+      modifiers[i] = modifiers[0];
     }
-    void init_gbm(DRM *drm)
+
+    if (modifiers[0])
     {
-        drm_ = drm;
-        DRM::drmPipe *pipe = drm->available_pipe();
-        uint64_t modifier;
+      flags = DRM_MODE_FB_MODIFIERS;
+      printf("Using modifier %" PRIx64 "\n", modifiers[0]);
+    }
 
-        device_ = gbm_create_device(drm_->fd_);
-        surface_ = NULL;
-        format_ = GBM_FORMAT_XRGB8888;
-        width_ = pipe->modes_.front()->hdisplay;
-        height_ = pipe->modes_.front()->vdisplay;
+    ret = drmModeAddFB2WithModifiers(drm_fd, width, height,
+                                     format, handles, strides, offsets,
+                                     modifiers, &fb->fb_id, flags);
+  }
 
-        // What is modifier?
-        if (gbm_surface_create_with_modifiers)
+  if (!ret)
+  {
+    if (flags)
+    {
+      perror("Modifiers failed!\n");
+
+      uint32_t temp1[4] = {gbm_bo_get_handle(bo).u32, 0, 0, 0};
+      uint32_t temp2[4] = {gbm_bo_get_stride(bo), 0, 0, 0};
+      memcpy(handles, temp1, 16);
+      memcpy(strides, temp2, 16);
+      memcpy(offsets, 0, 16);
+      ret = drmModeAddFB2(drm_fd, width, height,
+                          format, handles, strides, offsets,
+                          &fb->fb_id, 0);
+    }
+
+    if (ret)
+    {
+      printf("failed to create fb: %s\n", strerror(errno));
+      free(fb);
+      //return NULL;
+      return 1;
+    }
+
+    gbm_bo_set_user_data(bo, fb, drm_fb_destroy_callback);
+
+    // here we get fb
+  fb_exist:
+
+    // 목적은 fb를 얻는 것.
+    if (!fb)
+    {
+      perror("Failed to get a new framebuffer bo");
+      return 1;
+    }
+
+    // fb를 얻는 것은 drmModeSetCrtc를 부르기 위함.
+    DRM::drmPipe *pipe = drm->pipe();
+    ret = drmModeSetCrtc(drm->fd(), pipe->crtc_->crtc_id, fb->fb_id, 0, 0,
+                         &(pipe->connector_->connector_id), 1, pipe->modes_.front());
+
+    if (ret)
+    {
+      perror("failed to drmModeSetCrtc()");
+      return 1;
+    }
+
+    int i = 0;
+    fd_set fds;
+
+    while (1)
+    {
+
+      struct gbm_bo *next_bo;
+      int waiting_for_flip = 1;
+
+      gl->draw(i++);
+
+      eglSwapBuffers(egl->display(), egl->surface());
+      egl->error();
+      next_bo = gbm_surface_lock_front_buffer(gbm->surface());
+
+      // fb = drm_fb_get_from_bo, but, already have fb use it
+      if (!fb)
+      {
+        return -1;
+      }
+
+      if (drmModePageFlip(drm->fd(), pipe->crtc_->crtc_id, fb->fb_id,
+                          DRM_MODE_PAGE_FLIP_EVENT, &waiting_for_flip))
+      {
+        cout << "failed to drmModePageFlip()" << endl;
+      }
+
+      while (waiting_for_flip)
+      {
+        FD_ZERO(&fds);
+        FD_SET(0, &fds);
+        FD_SET(drm->fd(), &fds);
+
+        ret = select(drm->fd() + 1, &fds, NULL, NULL, NULL);
+
+        if (ret < 0)
         {
-            surface_ = gbm_surface_create_with_modifiers(device_, width_, height_,
-                                                         format_, &modifier, 1);
-            cout << "[gbm]" << endl;
-            cout << "width    : " << width_ << endl;
-            cout << "height   : " << height_ << endl;
-            cout << "modifier : " << modifier << endl;
+          printf("select err: %s\n", strerror(errno));
+          return ret;
         }
-    }
-};
-
-class EGL
-{
-private:
-    EGLint major_, minor_;
-    GBM *gbm_;
-
-    EGLDisplay display_;
-
-    PFNEGLGETPLATFORMDISPLAYEXTPROC eglGetPlatformDisplayEXT;
-
-public:
-    static EGL *instance()
-    {
-        static EGL instance_;
-        return &instance_;
-    }
-
-    int init_egl(GBM *gbm)
-    {
-        gbm_ = gbm;
-
-        const string client_exts(eglQueryString(NULL, EGL_EXTENSIONS));
-
-        // difference between eglGetPlatformDisplayEXT
-        // eglGetPlatformDisplayEXT specifies native display platform explicitly
-        // eglGetDisplay guess the native display plaform which is error prone
-        if(!client_exts.find("EGL_EXT_platform_base")){
-            eglGetPlatformDisplayEXT = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(eglGetProcAddress("eglGetPlatformDisplay"));
-            if(eglGetPlatformDisplayEXT)
-                display_ = eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_MESA, gbm->device_, NULL);
-            else
-            {
-                    cout << "Cannot retrive function pointer for eglGetPlatformDisplayEXT" << endl;
-                    return 1;
-            }
-        }
-        else
+        else if (ret == 0)
         {
-            display_ = eglGetDisplay(gbm->device_);
+          printf("select timeout!\n");
+          return -1;
+        }
+        else if (FD_ISSET(0, &fds))
+        {
+          printf("user interrupted!\n");
+          return 0;
         }
 
-        // initialize the display
-        eglInitialize(display_, &major_, &minor_);
+        drmHandleEvent(drm->fd(), &evctx);
+      }
 
-        // egl extensions
-        const string display_exts(eglQueryString(display_, EGL_EXTENSIONS));
-        
-        cout << "[egl]" << endl;
-        cout << "version : " << eglQueryString(display_, EGL_VERSION) << endl;
-        cout << "vendor  : " << eglQueryString(display_, EGL_VENDOR) << endl;
-        cout << "client extensions  : " << client_exts << endl;
-        cout << "display extensions : " << display_exts << endl;
-
-        return 0;
+      gbm_surface_release_buffer(gbm->surface(), bo);
+      bo = next_bo;
     }
-
-    int init_gl() {
-
-        const EGLint attribs[] = {
-            EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-            EGL_RED_SIZE, 1,
-            EGL_GREEN_SIZE, 1,
-            EGL_BLUE_SIZE, 1,
-            EGL_ALPHA_SIZE, 1,
-            EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-            EGL_SAMPLES, 2,
-            EGL_NONE
-        };
-
-        // bind API
-        if(!eglBindAPI(EGL_OPENGL_ES_API)) {
-            cout << "Failed to bind api" << endl;
-        }
-
-        EGLConfig *configs;
-        EGLint count = 0;
-        EGLint matched = 0;
-
-        // get counts of configs
-        eglGetConfigs(display_, NULL, 0, &count);
-        if(!count) {
-            cout << "no available configs" << endl;
-            return 1;
-        }
- 
-        // setting config
-        configs = (EGLConfig*)malloc(count * sizeof(EGLConfig));
-        if(!configs) {
-            cout << "failed to malloc for EGLConfig" << endl;
-            return 1;
-        }
-
-        // approval configs and get them 
-        if(!eglChooseConfig(display_, attribs, configs, count, &matched) || !matched) {
-            cout << "failed to 적용 configs" << endl;
-
-        }
-        else {
-            
-
-        }
-
-
-            free(configs);
-            return 1;
-
-
-
-
-    }
-};
-
-int init_drm()
-{
-    DRM *drm = DRM::instance();
-    GBM *gbm = GBM::instance();
-    EGL *egl = EGL::instance();
-    DRM::drmPipe *pipe;
-
-    drm->device_open();
-    drm->initialize();
-    drm->print();
-
-    gbm->init_gbm(drm);
-
-    egl->init_egl(gbm);
-
-    egl->init_gl();
 
     return 0;
+  }
+
+  return 0;
 }
+
+/*
+static void error_callback(int error, const char* description) {
+  perror(description);
+}
+
+static void key_callback(GLFWwindow* window, int key, int action, int mods) {
+  if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
+    glfwSetWindowShouldClose(window, GL_TRUE);
+  }
+}
+*/
 
 int main()
 {
-    if (init_drm())
-    {
-        cout << "Failed init_drm()";
-        exit(1);
-    }
-    /*
-     if(init_gbm()) {
-     cout << "Failed init_gbm()";
-     exit(1);
-     }
-     if(init_egl()) {
-     cout << "Failed init_egl()";
-     exit(1);
-     }
-     */
-    return 0;
+
+  if (init())
+  {
+    perror("Failed init()");
+    exit(1);
+  }
+
+  /* 
+  GLFWwindow* window;
+
+  glfwSetErrorCallback(error_callback);
+  
+  if(!glfwInit()) {
+    perror("1");
+    exit(EXIT_FAILURE);
+  }
+
+  window = glfwCreateWindow(640, 480, "Simple example", NULL, NULL);
+  if (!window) {
+    printf("2\n");
+    glfwTerminate();
+    exit(EXIT_FAILURE);
+  }
+
+  glfwMakeContextCurrent(window);
+
+  glfwSetKeyCallback(window, (GLFWkeyfun)key_callback);
+
+  while (!glfwWindowShouldClose(window)) {
+    float ratio;
+    int width, height;
+
+    glfwGetFramebufferSize(window, &width, &height);
+    ratio = width / (float) height;
+
+    glViewport(0, 0, width, height);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(-ratio, ratio, -1.f, 1.f, 1.f, -1.f);
+    glMatrixMode(GL_MODELVIEW);
+
+    glLoadIdentity();
+    glRotatef((float) glfwGetTime() * 50.f, 0.f, 0.f, 1.f);
+
+    glBegin(GL_TRIANGLES);
+    glColor3f(1.f, 0.f, 0.f);
+    glVertex3f(-0.6f, -0.4f, 0.f);
+    glColor3f(0.f, 1.f, 0.f);
+    glVertex3f(0.6f, -0.4f, 0.f);
+    glColor3f(0.f, 0.f, 1.f);
+    glVertex3f(0.f, 0.6f, 0.f);
+    glEnd();
+
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+  }
+
+  glfwDestroyWindow(window);
+  
+  glfwTerminate();
+  exit(EXIT_SUCCESS);
+  */
+
+  return 0;
 }
